@@ -35,7 +35,7 @@ description: "Task list for High-Frequency Algo Trading Platform implementation"
 - [ ] T003 Initialize TypeScript frontend project with Next.js dependencies in frontend/package.json
 - [ ] T004 [P] Configure clean code tools (linting, formatting, static analysis) for backend in .pre-commit-config.yaml
 - [ ] T005 [P] Configure clean code tools (linting, formatting, static analysis) for frontend in .eslintrc.js
-- [ ] T006 [P] Setup testing framework for backend (pytest) in backend/pyproject.toml
+- [ ] T006 [P] Setup testing framework for backend (pytest) in backend/pyproject.toml 
 - [ ] T007 [P] Setup testing framework for frontend (Jest/React Testing Library) in frontend/jest.config.js
 - [ ] T008 [P] Configure monitoring for scalability metrics in backend/src/utils/logging.py
 - [ ] T009 Setup Docker configuration for backend services in backend/Dockerfile
