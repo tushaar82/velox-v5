@@ -12,9 +12,10 @@ from ...models.trading import (
     TradeOrder, Position, OrderType, OrderSide, OrderStatus, PositionStatus
 )
 from ...models.market_data import Tick
-from ...utils.logging import get_logger, log_strategy_execution, log_performance
+from ...utils.logging import get_logger, log_strategy_execution, log_performance, log_risk_event
 from ...utils.monitoring import trade_execution_histogram, PerformanceTracker
 from .base import StrategyEngine, Signal
+from .risk_manager import risk_manager
 
 
 logger = get_logger(__name__)
@@ -26,6 +27,7 @@ class StrategyExecutor:
     def __init__(self):
         """Initialize strategy executor."""
         self.active_strategies: Dict[int, StrategyEngine] = {}
+        self.risk_manager = risk_manager
 
     async def start_strategy(
         self,
@@ -134,6 +136,59 @@ class StrategyExecutor:
         """
         with PerformanceTracker(trade_execution_histogram):
             try:
+                # Check risk limits before executing
+                is_within_limits, violation = await self.risk_manager.check_risk_limits(
+                    strategy_instance_id,
+                    user_id,
+                    db
+                )
+
+                if not is_within_limits and violation:
+                    log_risk_event(
+                        event_type="trade_blocked_risk_limit",
+                        severity="warning",
+                        details={
+                            "strategy_id": strategy_instance_id,
+                            "violation": violation.violation_type,
+                            "message": violation.message
+                        }
+                    )
+
+                    # Close all positions if critical violation
+                    if violation.severity == "critical":
+                        await self.risk_manager.close_all_positions(
+                            strategy_instance_id,
+                            f"Risk limit breached: {violation.message}",
+                            db
+                        )
+
+                        # Stop strategy
+                        await self.stop_strategy(strategy_instance_id, db)
+
+                    logger.warning(
+                        f"Trade blocked due to risk limit: {violation.message}",
+                        strategy_id=strategy_instance_id
+                    )
+                    return None
+
+                # Check position size limit for entry signals
+                if signal.signal_type == 'entry':
+                    quantity = self._calculate_quantity(signal)
+                    position_value = signal.price * quantity
+
+                    is_allowed, reason = await self.risk_manager.check_position_size_limit(
+                        strategy_instance_id,
+                        user_id,
+                        position_value,
+                        db
+                    )
+
+                    if not is_allowed:
+                        logger.warning(
+                            f"Trade blocked: {reason}",
+                            strategy_id=strategy_instance_id
+                        )
+                        return None
                 # Create trade order
                 order = TradeOrder(
                     strategy_instance_id=strategy_instance_id,
