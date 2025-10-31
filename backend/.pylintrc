@@ -1,0 +1,31 @@
+[MASTER]
+ignore=CVS,.git,__pycache__,.venv,venv
+persistent=yes
+load-plugins=
+
+[MESSAGES CONTROL]
+disable=
+    C0111,  # missing-docstring
+    R0903,  # too-few-public-methods
+    R0913,  # too-many-arguments
+    C0103,  # invalid-name
+
+[FORMAT]
+max-line-length=100
+indent-string='    '
+indent-after-paren=4
+
+[BASIC]
+good-names=i,j,k,ex,Run,_,id,db
+
+[DESIGN]
+max-args=7
+max-attributes=10
+max-bool-expr=5
+max-branches=12
+max-locals=15
+max-parents=7
+max-public-methods=20
+max-returns=6
+max-statements=50
+min-public-methods=0
