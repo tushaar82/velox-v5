@@ -10,9 +10,10 @@ from pydantic import BaseModel
 
 from ...models.database import get_db
 from ...models.user import User
-from ...models.trading import TradeOrder, Position, OrderStatus, PositionStatus
+from ...models.trading import TradeOrder, Position, OrderStatus, PositionStatus, TrailingStoploss
 from ...core.security import get_current_active_user
 from ...services.strategy_engine.executor import strategy_executor
+from ...services.strategy_engine.trailing_stoploss import trailing_stoploss_service
 
 
 router = APIRouter()
@@ -189,3 +190,152 @@ async def get_position(
         unrealized_pnl=position.unrealized_pnl,
         status=position.status.value
     )
+
+
+# Trailing Stoploss Endpoints
+
+class TrailingStoplossCreate(BaseModel):
+    """Create trailing stoploss request."""
+    trailing_percentage: float
+    trailing_amount: float | None = None
+
+
+class TrailingStoplossResponse(BaseModel):
+    """Trailing stoploss response."""
+    id: int
+    position_id: int
+    trailing_percentage: float
+    trailing_amount: float | None
+    highest_price: float
+    current_stop_price: float
+    is_active: bool
+    is_triggered: bool
+
+    class Config:
+        from_attributes = True
+
+
+@router.post("/positions/{position_id}/trailing-stoploss", response_model=TrailingStoplossResponse)
+async def create_trailing_stoploss(
+    position_id: int,
+    stoploss_data: TrailingStoplossCreate,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Create trailing stoploss for a position."""
+    # Verify position belongs to user
+    result = await db.execute(
+        select(Position).where(
+            Position.id == position_id,
+            Position.user_id == current_user.id,
+            Position.status == PositionStatus.OPEN
+        )
+    )
+    position = result.scalar_one_or_none()
+
+    if not position:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Position not found or already closed"
+        )
+
+    # Check if trailing stoploss already exists
+    result = await db.execute(
+        select(TrailingStoploss).where(
+            TrailingStoploss.position_id == position_id,
+            TrailingStoploss.is_active == True
+        )
+    )
+    existing_stoploss = result.scalar_one_or_none()
+
+    if existing_stoploss:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Trailing stoploss already exists for this position"
+        )
+
+    # Create trailing stoploss
+    stoploss = await trailing_stoploss_service.create_trailing_stoploss(
+        position,
+        stoploss_data.trailing_percentage,
+        stoploss_data.trailing_amount,
+        db
+    )
+
+    return stoploss
+
+
+@router.get("/positions/{position_id}/trailing-stoploss", response_model=TrailingStoplossResponse)
+async def get_trailing_stoploss(
+    position_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get trailing stoploss for a position."""
+    # Verify position belongs to user
+    result = await db.execute(
+        select(Position).where(
+            Position.id == position_id,
+            Position.user_id == current_user.id
+        )
+    )
+    position = result.scalar_one_or_none()
+
+    if not position:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Position not found"
+        )
+
+    # Get trailing stoploss
+    result = await db.execute(
+        select(TrailingStoploss).where(
+            TrailingStoploss.position_id == position_id
+        )
+    )
+    stoploss = result.scalar_one_or_none()
+
+    if not stoploss:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Trailing stoploss not found"
+        )
+
+    return stoploss
+
+
+@router.delete("/positions/{position_id}/trailing-stoploss")
+async def delete_trailing_stoploss(
+    position_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Deactivate trailing stoploss for a position."""
+    # Verify position belongs to user
+    result = await db.execute(
+        select(Position).where(
+            Position.id == position_id,
+            Position.user_id == current_user.id
+        )
+    )
+    position = result.scalar_one_or_none()
+
+    if not position:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Position not found"
+        )
+
+    # Deactivate trailing stoploss
+    success = await trailing_stoploss_service.deactivate_trailing_stoploss(
+        position_id,
+        db
+    )
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Trailing stoploss not found"
+        )
+
+    return {"message": "Trailing stoploss deactivated", "position_id": position_id}

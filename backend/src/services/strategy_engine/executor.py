@@ -16,6 +16,7 @@ from ...utils.logging import get_logger, log_strategy_execution, log_performance
 from ...utils.monitoring import trade_execution_histogram, PerformanceTracker
 from .base import StrategyEngine, Signal
 from .risk_manager import risk_manager
+from .trailing_stoploss import trailing_stoploss_service
 
 
 logger = get_logger(__name__)
@@ -279,6 +280,22 @@ class StrategyExecutor:
                 }
             )
 
+            # Check if strategy has trailing stoploss enabled
+            result = await db.execute(
+                select(StrategyInstance)
+                .where(StrategyInstance.id == order.strategy_instance_id)
+            )
+            instance = result.scalar_one_or_none()
+
+            if instance and instance.trailing_stoploss_enabled and instance.trailing_stoploss_percentage:
+                # Create trailing stoploss for this position
+                await trailing_stoploss_service.create_trailing_stoploss(
+                    position,
+                    instance.trailing_stoploss_percentage,
+                    None,  # Can add trailing_amount support later
+                    db
+                )
+
             logger.info(
                 f"Position {position.id} opened",
                 position_id=position.id,
@@ -353,14 +370,17 @@ class StrategyExecutor:
         position: Position,
         current_price: float,
         db: AsyncSession
-    ) -> None:
+    ) -> Optional[bool]:
         """
-        Update position with current market price.
+        Update position with current market price and check trailing stoploss.
 
         Args:
             position: Position to update
             current_price: Current market price
             db: Database session
+
+        Returns:
+            True if trailing stoploss was triggered, None otherwise
         """
         try:
             position.current_price = current_price
@@ -373,11 +393,30 @@ class StrategyExecutor:
 
             position.unrealized_pnl = pnl
 
+            # Check and update trailing stoploss
+            stoploss_triggered = await trailing_stoploss_service.update_trailing_stoploss(
+                position,
+                current_price,
+                db
+            )
+
+            # If stoploss triggered, close the position
+            if stoploss_triggered:
+                await self.close_position(position, current_price, db)
+                logger.info(
+                    f"Position {position.id} closed by trailing stoploss",
+                    position_id=position.id,
+                    symbol=position.symbol
+                )
+                return True
+
             await db.commit()
+            return None
 
         except Exception as e:
             logger.error(f"Error updating position: {e}", exc_info=True)
             await db.rollback()
+            return None
 
     def _calculate_quantity(self, signal: Signal) -> int:
         """
