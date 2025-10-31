@@ -227,6 +227,35 @@ export interface WebSocketMessage {
   message?: string;
 }
 
+// Broker types
+export interface BrokerAccount {
+  id: number;
+  user_id: number;
+  broker_type: string;
+  account_name: string;
+  account_id: string;
+  is_active: boolean;
+  is_primary: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BrokerBalance {
+  id: number;
+  broker_account_id: number;
+  available_cash: number;
+  total_cash: number;
+  margin_used: number;
+  margin_available: number;
+  updated_at: string;
+}
+
+export interface BrokerConnectionTest {
+  success: boolean;
+  broker_name: string;
+  message: string;
+}
+
 // API response types
 export interface ApiResponse<T = any> {
   data?: T;

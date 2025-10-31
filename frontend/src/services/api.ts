@@ -17,6 +17,9 @@ import type {
   DrawdownPoint,
   Tick,
   Candle,
+  BrokerAccount,
+  BrokerBalance,
+  BrokerConnectionTest,
   ApiResponse,
   PaginatedResponse,
 } from '../types';
@@ -357,6 +360,84 @@ class ApiService {
     return this.request<{ message: string; snapshot_id: number }>({
       method: 'POST',
       url: `/api/v1/analytics/snapshot/${strategyInstanceId}`,
+    });
+  }
+
+  // ============= Brokers =============
+
+  async getSupportedBrokers(): Promise<string[]> {
+    return this.request<string[]>({
+      method: 'GET',
+      url: '/api/v1/brokers/supported',
+    });
+  }
+
+  async getBrokerAccounts(): Promise<BrokerAccount[]> {
+    return this.request<BrokerAccount[]>({
+      method: 'GET',
+      url: '/api/v1/brokers',
+    });
+  }
+
+  async getBrokerAccount(id: number): Promise<BrokerAccount> {
+    return this.request<BrokerAccount>({
+      method: 'GET',
+      url: `/api/v1/brokers/${id}`,
+    });
+  }
+
+  async createBrokerAccount(data: {
+    broker_type: string;
+    account_name: string;
+    account_id: string;
+    api_key?: string;
+    api_secret?: string;
+    access_token?: string;
+    is_primary?: boolean;
+  }): Promise<BrokerAccount> {
+    return this.request<BrokerAccount>({
+      method: 'POST',
+      url: '/api/v1/brokers',
+      data,
+    });
+  }
+
+  async updateBrokerAccount(
+    id: number,
+    data: {
+      account_name?: string;
+      api_key?: string;
+      api_secret?: string;
+      access_token?: string;
+      is_active?: boolean;
+      is_primary?: boolean;
+    }
+  ): Promise<BrokerAccount> {
+    return this.request<BrokerAccount>({
+      method: 'PATCH',
+      url: `/api/v1/brokers/${id}`,
+      data,
+    });
+  }
+
+  async deleteBrokerAccount(id: number): Promise<void> {
+    return this.request<void>({
+      method: 'DELETE',
+      url: `/api/v1/brokers/${id}`,
+    });
+  }
+
+  async testBrokerConnection(id: number): Promise<BrokerConnectionTest> {
+    return this.request<BrokerConnectionTest>({
+      method: 'POST',
+      url: `/api/v1/brokers/${id}/test-connection`,
+    });
+  }
+
+  async getBrokerBalance(id: number): Promise<BrokerBalance> {
+    return this.request<BrokerBalance>({
+      method: 'GET',
+      url: `/api/v1/brokers/${id}/balance`,
     });
   }
 

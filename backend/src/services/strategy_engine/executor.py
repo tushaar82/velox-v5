@@ -9,15 +9,24 @@ from sqlalchemy import select, update
 
 from ...models.strategy import StrategyInstance, StrategyStatus, TradingMode
 from ...models.trading import (
-    TradeOrder, Position, OrderType, OrderSide, OrderStatus, PositionStatus
+    TradeOrder, Position, OrderType, OrderSide, OrderStatus, PositionStatus, TradeExecution
 )
 from ...models.market_data import Tick
+from ...models.user import BrokerAccount
 from ...utils.logging import get_logger, log_strategy_execution, log_performance, log_risk_event
 from ...utils.monitoring import trade_execution_histogram, PerformanceTracker
 from .base import StrategyEngine, Signal
 from .risk_manager import risk_manager
 from .trailing_stoploss import trailing_stoploss_service
 from ..trading_mode_service import trading_mode_service
+from ..broker_adapter.factory import BrokerAdapterFactory
+from ..broker_adapter.base import (
+    BrokerAdapter,
+    BrokerException,
+    OrderRequest,
+    OrderType as BrokerOrderType,
+    OrderSide as BrokerOrderSide,
+)
 
 
 logger = get_logger(__name__)
@@ -115,6 +124,145 @@ class StrategyExecutor:
             logger.error(f"Error stopping strategy: {e}", exc_info=True)
             await db.rollback()
             return False
+
+    async def send_order_to_broker(
+        self,
+        order: TradeOrder,
+        strategy_instance: StrategyInstance,
+        db: AsyncSession
+    ) -> Optional[TradeExecution]:
+        """
+        Send order to broker for execution.
+
+        Args:
+            order: Trade order to execute
+            strategy_instance: Strategy instance
+            db: Database session
+
+        Returns:
+            TradeExecution record if successful, None otherwise
+        """
+        try:
+            # Skip broker execution for paper trading mode
+            if strategy_instance.trading_mode == TradingMode.PAPER:
+                logger.info(f"Order {order.id} is in paper trading mode, skipping broker execution")
+                # Simulate immediate fill for paper trading
+                order.status = OrderStatus.FILLED
+                order.filled_quantity = order.quantity
+                order.average_fill_price = order.price or 100.0  # Use order price or default
+                order.filled_at = datetime.utcnow()
+                await db.commit()
+                return None
+
+            # Get broker adapter for the user
+            try:
+                broker_adapter = await BrokerAdapterFactory.create_adapter_for_user(
+                    user_id=order.user_id,
+                    db=db
+                )
+            except BrokerException as e:
+                logger.error(f"Failed to create broker adapter: {e}")
+                order.status = OrderStatus.REJECTED
+                order.rejection_reason = str(e)
+                await db.commit()
+                return None
+
+            # Connect to broker
+            if not broker_adapter.is_connected():
+                await broker_adapter.connect()
+
+            # Map order types
+            broker_order_type = BrokerOrderType.MARKET
+            if order.order_type == OrderType.LIMIT:
+                broker_order_type = BrokerOrderType.LIMIT
+            elif order.order_type == OrderType.STOP:
+                broker_order_type = BrokerOrderType.STOP
+
+            # Map order side
+            broker_order_side = BrokerOrderSide.BUY if order.side == OrderSide.BUY else BrokerOrderSide.SELL
+
+            # Create broker order request
+            broker_order_request = OrderRequest(
+                symbol=order.symbol,
+                side=broker_order_side,
+                order_type=broker_order_type,
+                quantity=order.quantity,
+                price=order.price,
+                stop_price=order.stop_price,
+                strategy_instance_id=strategy_instance.id
+            )
+
+            # Place order with broker
+            try:
+                broker_response = await broker_adapter.place_order(broker_order_request)
+                logger.info(f"Order placed with broker: {broker_response.broker_order_id}")
+
+                # Update order with broker details
+                order.broker_order_id = broker_response.broker_order_id
+                order.status = OrderStatus.SUBMITTED
+                order.submitted_at = broker_response.placed_at or datetime.utcnow()
+
+                # If order is already filled (market orders may fill immediately)
+                if broker_response.status.value == OrderStatus.FILLED.value:
+                    order.status = OrderStatus.FILLED
+                    order.filled_quantity = broker_response.filled_quantity
+                    order.average_fill_price = broker_response.average_price
+                    order.commission = broker_response.commission
+                    order.filled_at = broker_response.filled_at
+
+                    # Create trade execution record
+                    # Get broker account ID from the adapter context (would need to be stored)
+                    # For now, we'll need to query it
+                    broker_account_result = await db.execute(
+                        select(BrokerAccount).where(
+                            BrokerAccount.user_id == order.user_id,
+                            BrokerAccount.is_primary == True,
+                            BrokerAccount.is_active == True
+                        )
+                    )
+                    broker_account = broker_account_result.scalar_one_or_none()
+
+                    if broker_account:
+                        trade_execution = TradeExecution(
+                            order_id=order.id,
+                            broker_account_id=broker_account.id,
+                            symbol=order.symbol,
+                            side=order.side,
+                            quantity=broker_response.filled_quantity,
+                            price=broker_response.average_price,
+                            broker_execution_id=broker_response.broker_order_id,
+                            broker_order_id=broker_response.broker_order_id,
+                            commission=broker_response.commission,
+                            tax=broker_response.tax,
+                            total_cost=(broker_response.filled_quantity * broker_response.average_price +
+                                       broker_response.commission + broker_response.tax),
+                            executed_at=broker_response.filled_at or datetime.utcnow()
+                        )
+                        db.add(trade_execution)
+
+                await db.commit()
+
+                # Disconnect from broker
+                await broker_adapter.disconnect()
+
+                return trade_execution if 'trade_execution' in locals() else None
+
+            except BrokerException as e:
+                logger.error(f"Broker rejected order: {e}")
+                order.status = OrderStatus.REJECTED
+                order.rejection_reason = str(e)
+                await db.commit()
+
+                # Disconnect from broker
+                await broker_adapter.disconnect()
+                return None
+
+        except Exception as e:
+            logger.error(f"Error sending order to broker: {e}", exc_info=True)
+            order.status = OrderStatus.REJECTED
+            order.rejection_reason = str(e)
+            await db.commit()
+            return None
 
     @log_performance("trade_execution_latency")
     async def execute_signal(
@@ -218,16 +366,32 @@ class StrategyExecutor:
                     }
                 )
 
-                # TODO: Send order to broker for execution
-                # For now, just mark as submitted
-                order.status = OrderStatus.SUBMITTED
-                order.submitted_at = datetime.utcnow()
-                await db.commit()
+                # Get strategy instance for broker execution
+                result = await db.execute(
+                    select(StrategyInstance)
+                    .where(StrategyInstance.id == strategy_instance_id)
+                )
+                strategy_instance = result.scalar_one_or_none()
+
+                if not strategy_instance:
+                    logger.error(f"Strategy instance {strategy_instance_id} not found")
+                    order.status = OrderStatus.REJECTED
+                    order.rejection_reason = "Strategy instance not found"
+                    await db.commit()
+                    return None
+
+                # Send order to broker for execution
+                trade_execution = await self.send_order_to_broker(order, strategy_instance, db)
+
+                # If order was filled immediately, open position
+                if order.status == OrderStatus.FILLED and order.filled_quantity > 0:
+                    await self.open_position(order, order.average_fill_price, db)
 
                 logger.info(
                     f"Order {order.id} submitted for strategy {strategy_instance_id}",
                     order_id=order.id,
-                    symbol=signal.symbol
+                    symbol=signal.symbol,
+                    status=order.status.value
                 )
 
                 return order

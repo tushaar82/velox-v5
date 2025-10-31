@@ -122,13 +122,14 @@ async def root():
 
 
 # Import and include routers
-from .api.endpoints import strategies, trading, market_data, risk, analytics, websocket
+from .api.endpoints import strategies, trading, market_data, risk, analytics, websocket, brokers
 
 app.include_router(strategies.router, prefix=f"{settings.API_V1_PREFIX}/strategies", tags=["strategies"])
 app.include_router(trading.router, prefix=f"{settings.API_V1_PREFIX}/trading", tags=["trading"])
 app.include_router(market_data.router, prefix=f"{settings.API_V1_PREFIX}/market-data", tags=["market-data"])
 app.include_router(risk.router, prefix=f"{settings.API_V1_PREFIX}/risk", tags=["risk"])
 app.include_router(analytics.router, prefix=f"{settings.API_V1_PREFIX}/analytics", tags=["analytics"])
+app.include_router(brokers.router, prefix=f"{settings.API_V1_PREFIX}/brokers", tags=["brokers"])
 app.include_router(websocket.router, prefix="/ws", tags=["websocket"])
 
 # TODO: Add remaining routers as we implement more user stories
