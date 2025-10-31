@@ -7,7 +7,7 @@ from typing import Optional, Dict, List
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update
 
-from ...models.strategy import StrategyInstance, StrategyStatus
+from ...models.strategy import StrategyInstance, StrategyStatus, TradingMode
 from ...models.trading import (
     TradeOrder, Position, OrderType, OrderSide, OrderStatus, PositionStatus
 )
@@ -17,6 +17,7 @@ from ...utils.monitoring import trade_execution_histogram, PerformanceTracker
 from .base import StrategyEngine, Signal
 from .risk_manager import risk_manager
 from .trailing_stoploss import trailing_stoploss_service
+from ..trading_mode_service import trading_mode_service
 
 
 logger = get_logger(__name__)
@@ -270,23 +271,34 @@ class StrategyExecutor:
             await db.commit()
             await db.refresh(position)
 
-            log_strategy_execution(
-                strategy_id=str(order.strategy_instance_id),
-                action="position_opened",
-                details={
-                    "position_id": position.id,
-                    "symbol": order.symbol,
-                    "entry_price": filled_price
-                }
-            )
-
-            # Check if strategy has trailing stoploss enabled
+            # Get strategy instance to check trading mode
             result = await db.execute(
                 select(StrategyInstance)
                 .where(StrategyInstance.id == order.strategy_instance_id)
             )
             instance = result.scalar_one_or_none()
 
+            # Execute in paper trading mode if applicable
+            if instance and instance.trading_mode == TradingMode.PAPER:
+                await trading_mode_service.execute_paper_trade(
+                    order,
+                    filled_price,
+                    order.user_id,
+                    db
+                )
+
+            log_strategy_execution(
+                strategy_id=str(order.strategy_instance_id),
+                action="position_opened",
+                details={
+                    "position_id": position.id,
+                    "symbol": order.symbol,
+                    "entry_price": filled_price,
+                    "trading_mode": instance.trading_mode.value if instance else "unknown"
+                }
+            )
+
+            # Check if strategy has trailing stoploss enabled
             if instance and instance.trailing_stoploss_enabled and instance.trailing_stoploss_percentage:
                 # Create trailing stoploss for this position
                 await trailing_stoploss_service.create_trailing_stoploss(
@@ -297,7 +309,7 @@ class StrategyExecutor:
                 )
 
             logger.info(
-                f"Position {position.id} opened",
+                f"Position {position.id} opened in {instance.trading_mode.value if instance else 'unknown'} mode",
                 position_id=position.id,
                 symbol=order.symbol
             )
@@ -340,6 +352,22 @@ class StrategyExecutor:
 
             position.realized_pnl = pnl
 
+            # Get strategy instance to check trading mode
+            result = await db.execute(
+                select(StrategyInstance)
+                .where(StrategyInstance.id == position.strategy_instance_id)
+            )
+            instance = result.scalar_one_or_none()
+
+            # Handle paper trading mode
+            if instance and instance.trading_mode == TradingMode.PAPER:
+                await trading_mode_service.close_paper_position(
+                    position,
+                    exit_price,
+                    position.user_id,
+                    db
+                )
+
             await db.commit()
 
             log_strategy_execution(
@@ -348,12 +376,13 @@ class StrategyExecutor:
                 details={
                     "position_id": position.id,
                     "symbol": position.symbol,
-                    "pnl": pnl
+                    "pnl": pnl,
+                    "trading_mode": instance.trading_mode.value if instance else "unknown"
                 }
             )
 
             logger.info(
-                f"Position {position.id} closed with P&L: {pnl}",
+                f"Position {position.id} closed with P&L: {pnl} in {instance.trading_mode.value if instance else 'unknown'} mode",
                 position_id=position.id,
                 pnl=pnl
             )

@@ -13,6 +13,7 @@ from ...models.user import User
 from ...models.strategy import Strategy, StrategyInstance, StrategyStatus, TradingMode
 from ...core.security import get_current_active_user
 from ...services.strategy_engine.executor import strategy_executor
+from ...services.trading_mode_service import trading_mode_service
 
 
 router = APIRouter()
@@ -227,3 +228,103 @@ async def stop_strategy_instance(
         )
 
     return {"message": "Strategy stopped", "instance_id": instance_id}
+
+
+# Trading Mode Endpoints
+
+class TradingModeSwitch(BaseModel):
+    """Switch trading mode request."""
+    mode: str  # "live" or "paper"
+    force: bool = False
+
+
+class PaperAccountResponse(BaseModel):
+    """Paper trading account response."""
+    current_balance: float
+    initial_balance: float
+    total_pnl: float
+    return_percentage: float
+
+
+@router.post("/instances/{instance_id}/switch-mode")
+async def switch_trading_mode(
+    instance_id: int,
+    mode_switch: TradingModeSwitch,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Switch trading mode for a strategy instance."""
+    # Validate mode
+    try:
+        new_mode = TradingMode(mode_switch.mode)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid trading mode: {mode_switch.mode}. Must be 'live' or 'paper'"
+        )
+
+    # Switch mode
+    success, error = await trading_mode_service.switch_mode(
+        instance_id,
+        new_mode,
+        current_user.id,
+        mode_switch.force,
+        db
+    )
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=error
+        )
+
+    return {
+        "message": f"Trading mode switched to {new_mode.value}",
+        "instance_id": instance_id,
+        "mode": new_mode.value
+    }
+
+
+@router.get("/paper-account", response_model=PaperAccountResponse)
+async def get_paper_account(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get paper trading account balance."""
+    balance_info = await trading_mode_service.get_paper_account_balance(
+        current_user.id,
+        db
+    )
+
+    if not balance_info:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Paper trading account not found"
+        )
+
+    return PaperAccountResponse(**balance_info)
+
+
+@router.post("/paper-account/reset")
+async def reset_paper_account(
+    new_balance: float | None = None,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Reset paper trading account."""
+    success = await trading_mode_service.reset_paper_account(
+        current_user.id,
+        new_balance,
+        db
+    )
+
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to reset paper trading account"
+        )
+
+    return {
+        "message": "Paper trading account reset successfully",
+        "new_balance": new_balance
+    }
