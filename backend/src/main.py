@@ -108,13 +108,12 @@ async def root():
     )
 
 
-# API routes will be added here
-# from src.api.endpoints import auth, trading, strategies, analytics, market_data
-# app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
-# app.include_router(trading.router, prefix="/api/trading", tags=["trading"])
-# app.include_router(strategies.router, prefix="/api/strategies", tags=["strategies"])
-# app.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"])
-# app.include_router(market_data.router, prefix="/api/market-data", tags=["market-data"])
+# API routes
+from src.api.endpoints import auth, strategies, trading
+
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(strategies.router, prefix="/api/strategies", tags=["strategies"])
+app.include_router(trading.router, prefix="/api/trading", tags=["trading"])
 
 
 if __name__ == "__main__":
